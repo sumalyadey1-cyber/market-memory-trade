@@ -1,9 +1,4 @@
-
-app.py
-
-
 import streamlit as st
-import ccxt
 import pandas as pd
 import numpy as np
 from scipy.stats import zscore
