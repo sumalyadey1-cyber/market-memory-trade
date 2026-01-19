@@ -1,3 +1,7 @@
+
+app.py
+
+
 import streamlit as st
 import ccxt
 import pandas as pd
@@ -7,77 +11,73 @@ from sklearn.neighbors import NearestNeighbors
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
 import os
-
 # -----------------------------------------------------------------------------
 # Configuration & Setup
 # -----------------------------------------------------------------------------
 st.set_page_config(page_title="Bitcoin Market Memory", layout="wide")
-
 st.title("🧠 Context-Aware Market Memory: BTC/USDT")
 st.markdown("""
 **Concept:** This tool finds "Ghost Lines" — historical price patterns that match the *current* market structure.
 It uses Z-score normalization to match shapes rather than absolute prices and filters by market regime (Bull/Bear).
 """)
-
 # -----------------------------------------------------------------------------
 # 1. Data Ingestion (with Caching)
 # -----------------------------------------------------------------------------
 @st.cache_data(ttl=3600*12)  # Cache for 12 hours
-def fetch_binance_data(symbol='BTC/USDT', timeframe='1h', years=5):
+def fetch_binance_data(symbol='BTC-USD', timeframe='1h', years=5):
     """
-    Fetches historical OHLCV data from Binance via CCXT.
-    Handles pagination to get long histories (CCXT default limit is usually 500-1000).
+    Fetches historical OHLCV data from Yahoo Finance (yfinance).
     """
-    exchange = ccxt.binance()
+    import yfinance as yf
     
-    # Calculate start time (milliseconds timestamp)
+    # Calculate start date
     now = datetime.now()
     start_date = now - timedelta(days=365 * years)
-    since = int(start_date.timestamp() * 1000)
-    
-    all_candles = []
-    limit = 1000  # Binance limit per request
     
     status_text = st.empty()
-    status_text.text("Fetching data from Binance... this may take a moment for the first run.")
+    status_text.text("Fetching data from Yahoo Finance...")
     
-    while True:
-        try:
-            candles = exchange.fetch_ohlcv(symbol, timeframe, since=since, limit=limit)
-            if not candles:
-                break
+    try:
+        # yfinance allows fetching by period/interval easily
+        # '1h' interval has a limitation on how far back it goes (730 days max usually for hourly)
+        # If years > 2, yfinance might truncate or we might need daily if user wants 5 years of hourly.
+        # However, for '1h', yfinance often limits to last 730 days. 
+        # Let's try to get max available for 1h.
+        
+        # Override years if > 2 for hourly data due to YF limitation
+        if timeframe == '1h' and years > 2:
+            st.warning("Note: Yahoo Finance limits 1h data to the last 730 days (~2 years). Fetching max available.")
+        
+        # Download
+        df = yf.download(symbol, start=start_date, interval=timeframe, progress=False)
+        
+        if df.empty:
+            st.error("No data found for symbol.")
+            return pd.DataFrame()
             
-            all_candles.extend(candles)
+        # YFinance returns MultiIndex columns sometimes (Price, Ticker). Fix that.
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
             
-            # Update 'since' to the last timestamp found + 1 timeframe duration
-            # But simpler: just use the last candle's timestamp + 1ms
-            last_timestamp = candles[-1][0]
-            since = last_timestamp + 1
-            
-            # Use a safe break condition if we reached current time
-            if len(candles) < limit:
-                break
-                
-            # Optional: Progress feedback could go here
-            
-        except Exception as e:
-            st.error(f"Error fetching data: {e}")
-            break
-            
-    status_text.empty()
-    
-    if not all_candles:
+        # Standardize columns to lowercase for compatibility
+        df.rename(columns={
+            'Open': 'open',
+            'High': 'high',
+            'Low': 'low',
+            'Close': 'close',
+            'Volume': 'volume'
+        }, inplace=True)
+        
+        # Filter timezone if present to avoid mixups
+        if df.index.tz is not None:
+            df.index = df.index.tz_localize(None)
+        status_text.empty()
+        return df
+        
+    except Exception as e:
+        status_text.empty()
+        st.error(f"Error fetching data: {e}")
         return pd.DataFrame()
-
-    df = pd.DataFrame(all_candles, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-    df.set_index('timestamp', inplace=True)
-    
-    # Drop duplicates if any
-    df = df[~df.index.duplicated(keep='first')]
-    
-    return df
-
 # -----------------------------------------------------------------------------
 # 2. Feature Engineering & Logic
 # -----------------------------------------------------------------------------
@@ -98,7 +98,6 @@ def process_data(df):
     df['TR'] = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
     df['ATR'] = df['TR'].rolling(window=14).mean()
     df['ATR_MA'] = df['ATR'].rolling(window=200).mean() # Smoothed avg of volatility for regime check
-
     # 2.2 Regime Labeling
     # BULL: Price > SMA_200, BEAR: Price < SMA_200
     df['regime'] = np.where(df['close'] > df['SMA_200'], 'BULL', 'BEAR')
@@ -109,14 +108,12 @@ def process_data(df):
     # Clean NaN values created by rolling windows
     df.dropna(inplace=True)
     return df
-
 def normalize_window(window_prices):
     """
     Z-Score Normalization: (Price - Mean) / StdDev
     Makes the shape comparable regardless of absolute price level.
     """
     return zscore(window_prices)
-
 def find_similar_patterns(df, current_window_size=50, top_k=5):
     """
     The Core Engine:
@@ -128,7 +125,6 @@ def find_similar_patterns(df, current_window_size=50, top_k=5):
     # Safety check
     if len(df) < current_window_size + 200:
         return None, None, "Not enough data."
-
     # Get Current Context
     current_data = df.iloc[-current_window_size:]
     current_regime = current_data['regime'].iloc[-1] # Regime of the *latest* candle
@@ -162,7 +158,6 @@ def find_similar_patterns(df, current_window_size=50, top_k=5):
     
     if len(valid_indices) < top_k:
         return None, None, f"Not enough historical {current_regime} patterns found."
-
     # Construct feature matrix X
     # Each row is a normalized window of size 50 ending at index i
     X = []
@@ -221,18 +216,15 @@ def find_similar_patterns(df, current_window_size=50, top_k=5):
         })
         
     return current_prices, matches, None
-
 # -----------------------------------------------------------------------------
 # 3. Streamlit UI
 # -----------------------------------------------------------------------------
-
 # Sidebar Controls
 window_size = st.sidebar.slider("Pattern Window Size", 20, 100, 50)
 st.sidebar.markdown("---")
 st.sidebar.text("Settings:")
 st.sidebar.text(f"Symbol: BTC/USDT")
 st.sidebar.text(f"Timeframe: 1h")
-
 # Main execution
 with st.spinner("Loading Market Data..."):
     df = fetch_binance_data()
@@ -339,7 +331,6 @@ else:
                 line=dict(color=color, width=1),
                 hoverinfo='name'
             ))
-
             # Mark the "Now" point on the ghost line
             fig.add_trace(go.Scatter(
                 x=[window_size-1],
@@ -348,7 +339,6 @@ else:
                 marker=dict(color=color, size=5),
                 showlegend=False
             ))
-
         # Divider line for "Now"
         fig.add_vline(x=window_size-1, line_width=1, line_dash="dash", line_color="gray", annotation_text="Now")
         
