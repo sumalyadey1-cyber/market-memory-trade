@@ -304,6 +304,14 @@ else:
     if error_msg:
         st.warning(error_msg)
     else:
+        # Performance optimization: If showing all matches, calculate stats on all but only plot top matches
+        if show_all_matches and len(matches) > 10:
+            st.info(f"📊 Found {len(matches)} total matches. Displaying top 10 most similar on chart, but statistics include ALL matches.")
+            matches_to_plot = matches[:10]  # Only plot top 10
+            all_matches = matches  # Keep all for statistics
+        else:
+            matches_to_plot = matches
+            all_matches = matches
         # ---------------------------------------------------------------------
         # Visualization
         # ---------------------------------------------------------------------
@@ -339,7 +347,15 @@ else:
         up_matches = 0
         down_matches = 0
         
-        for i, m in enumerate(matches):
+        # Calculate statistics on ALL matches
+        for m in all_matches:
+            if m['return'] > 0:
+                up_matches += 1
+            else:
+                down_matches += 1
+        
+        # But only plot the subset
+        for i, m in enumerate(matches_to_plot):
             # Reconstruct price series from the match's Z-scores (implicitly)
             # Actually we have the raw prices. Let's calculate its Z-score and project to current.
             gw_prices = m['window_prices']
@@ -389,7 +405,9 @@ else:
             
             # Add glow effect (shadow lines)
             if enable_glow:
-                for glow_width in [4, 6, 8]:
+                # Reduce glow layers when plotting many matches
+                glow_layers = [4, 6] if len(matches_to_plot) > 5 else [4, 6, 8]
+                for glow_width in glow_layers:
                     glow_opacity = 0.1 if outcome_return > 0 else 0.08
                     glow_color = f'rgba(0, 255, 0, {glow_opacity})' if outcome_return > 0 else f'rgba(255, 0, 0, {glow_opacity})'
                     fig.add_trace(go.Scatter(
@@ -422,7 +440,7 @@ else:
         st.plotly_chart(fig, use_container_width=True)
         
         # Explanation
-        total_matches = len(matches)
+        total_matches = len(all_matches)  # Use all_matches for statistics
         win_rate = (up_matches / total_matches * 100) if total_matches > 0 else 0
         
         st.markdown(f"""
@@ -449,7 +467,7 @@ else:
         avg_changes = {}
         for hours in [1, 2, 3, 6, 12, 24]:
             hour_key = f'{hours}h'
-            changes = [m['pct_changes'].get(hour_key, 0) for m in matches if hour_key in m['pct_changes']]
+            changes = [m['pct_changes'].get(hour_key, 0) for m in all_matches if hour_key in m['pct_changes']]
             if changes:
                 avg_changes[hour_key] = np.mean(changes)
         
@@ -465,9 +483,15 @@ else:
                         delta=f"{'↑' if avg_pct > 0 else '↓'}"
                     )
         
-        # Individual match details
+        # Individual match details - limit display to prevent UI overload
         st.markdown("### 📋 Individual Match Details")
-        for idx, m in enumerate(matches, 1):
+        
+        # Show only first 20 matches in detail to prevent UI lag
+        matches_to_show = all_matches[:20] if len(all_matches) > 20 else all_matches
+        if len(all_matches) > 20:
+            st.info(f"Showing detailed info for top 20 matches out of {len(all_matches)} total.")
+        
+        for idx, m in enumerate(matches_to_show, 1):
             with st.expander(f"Match #{idx}: {m['timestamp'].strftime('%Y-%m-%d %H:%M')} ({'UP' if m['return'] > 0 else 'DOWN'})"):
                 col1, col2 = st.columns(2)
                 
