@@ -19,54 +19,82 @@ It uses Z-score normalization to match shapes rather than absolute prices and fi
 # 1. Data Ingestion (with Caching)
 # -----------------------------------------------------------------------------
 @st.cache_data(ttl=3600*12)  # Cache for 12 hours
-def fetch_binance_data(symbol='BTC-USD', timeframe='1h', years=5):
+def fetch_binance_data(symbol='BTC-USD', timeframe='1h', years=2):
     """
     Fetches historical OHLCV data from Yahoo Finance (yfinance).
     """
     import yfinance as yf
+    import time
     
     status_text = st.empty()
     status_text.text("Fetching data from Yahoo Finance...")
     
-    try:
-        # Yahoo Finance has limits on hourly data (max 730 days)
-        # Use period instead of start/end for better reliability
-        if timeframe == '1h':
-            # For hourly, max is 730 days
-            period = '730d'
-            st.warning("Note: Yahoo Finance limits 1h data to the last 730 days (~2 years). Fetching max available.")
-        else:
-            period = f'{years}y'
-        
-        # Download with period parameter
-        ticker = yf.Ticker(symbol)
-        df = ticker.history(period=period, interval=timeframe)
-        
-        if df.empty:
-            st.error(f"No data found for symbol {symbol}. Please check if the symbol is correct.")
-            status_text.empty()
-            return pd.DataFrame()
+    # Retry logic for rate limiting
+    max_retries = 3
+    retry_delay = 2  # seconds
+    
+    for attempt in range(max_retries):
+        try:
+            # Yahoo Finance has limits on hourly data (max 730 days)
+            # Use shorter period to reduce API load
+            if timeframe == '1h':
+                # Reduced to 365 days to minimize rate limit issues
+                period = '365d'
+                if attempt == 0:  # Only show warning on first attempt
+                    st.info("📊 Fetching 1 year of hourly Bitcoin data from Yahoo Finance...")
+            else:
+                period = f'{years}y'
             
-        # Standardize columns to lowercase for compatibility
-        df.rename(columns={
-            'Open': 'open',
-            'High': 'high',
-            'Low': 'low',
-            'Close': 'close',
-            'Volume': 'volume'
-        }, inplace=True)
-        
-        # Remove timezone if present
-        if df.index.tz is not None:
-            df.index = df.index.tz_localize(None)
-        status_text.empty()
-        st.success(f"✅ Loaded {len(df)} candles from Yahoo Finance")
-        return df
-        
-    except Exception as e:
-        status_text.empty()
-        st.error(f"Error fetching data: {str(e)}")
-        return pd.DataFrame()
+            # Download with period parameter
+            ticker = yf.Ticker(symbol)
+            df = ticker.history(period=period, interval=timeframe)
+            
+            if df.empty:
+                if attempt < max_retries - 1:
+                    status_text.text(f"Retry {attempt + 1}/{max_retries}... waiting {retry_delay}s")
+                    time.sleep(retry_delay)
+                    retry_delay *= 2  # Exponential backoff
+                    continue
+                else:
+                    st.error(f"❌ No data found for {symbol} after {max_retries} attempts. Yahoo Finance may be rate limiting.")
+                    status_text.empty()
+                    return pd.DataFrame()
+                
+            # Standardize columns to lowercase for compatibility
+            df.rename(columns={
+                'Open': 'open',
+                'High': 'high',
+                'Low': 'low',
+                'Close': 'close',
+                'Volume': 'volume'
+            }, inplace=True)
+            
+            # Remove timezone if present
+            if df.index.tz is not None:
+                df.index = df.index.tz_localize(None)
+            status_text.empty()
+            st.success(f"✅ Loaded {len(df):,} candles from Yahoo Finance")
+            return df
+            
+        except Exception as e:
+            error_msg = str(e).lower()
+            if 'rate' in error_msg or '429' in error_msg or 'too many' in error_msg:
+                if attempt < max_retries - 1:
+                    status_text.text(f"⏳ Rate limited. Retry {attempt + 1}/{max_retries} in {retry_delay}s...")
+                    time.sleep(retry_delay)
+                    retry_delay *= 2  # Exponential backoff
+                    continue
+                else:
+                    status_text.empty()
+                    st.error("⚠️ Yahoo Finance rate limit reached. Please wait a few minutes and refresh the page.")
+                    return pd.DataFrame()
+            else:
+                status_text.empty()
+                st.error(f"❌ Error fetching data: {str(e)}")
+                return pd.DataFrame()
+    
+    status_text.empty()
+    return pd.DataFrame()
 # -----------------------------------------------------------------------------
 # 2. Feature Engineering & Logic
 # -----------------------------------------------------------------------------
