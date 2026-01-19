@@ -25,34 +25,27 @@ def fetch_binance_data(symbol='BTC-USD', timeframe='1h', years=5):
     """
     import yfinance as yf
     
-    # Calculate start date
-    now = datetime.now()
-    start_date = now - timedelta(days=365 * years)
-    
     status_text = st.empty()
     status_text.text("Fetching data from Yahoo Finance...")
     
     try:
-        # yfinance allows fetching by period/interval easily
-        # '1h' interval has a limitation on how far back it goes (730 days max usually for hourly)
-        # If years > 2, yfinance might truncate or we might need daily if user wants 5 years of hourly.
-        # However, for '1h', yfinance often limits to last 730 days. 
-        # Let's try to get max available for 1h.
-        
-        # Override years if > 2 for hourly data due to YF limitation
-        if timeframe == '1h' and years > 2:
+        # Yahoo Finance has limits on hourly data (max 730 days)
+        # Use period instead of start/end for better reliability
+        if timeframe == '1h':
+            # For hourly, max is 730 days
+            period = '730d'
             st.warning("Note: Yahoo Finance limits 1h data to the last 730 days (~2 years). Fetching max available.")
+        else:
+            period = f'{years}y'
         
-        # Download
-        df = yf.download(symbol, start=start_date, interval=timeframe, progress=False)
+        # Download with period parameter
+        ticker = yf.Ticker(symbol)
+        df = ticker.history(period=period, interval=timeframe)
         
         if df.empty:
-            st.error("No data found for symbol.")
+            st.error(f"No data found for symbol {symbol}. Please check if the symbol is correct.")
+            status_text.empty()
             return pd.DataFrame()
-            
-        # YFinance returns MultiIndex columns sometimes (Price, Ticker). Fix that.
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
             
         # Standardize columns to lowercase for compatibility
         df.rename(columns={
@@ -63,15 +56,16 @@ def fetch_binance_data(symbol='BTC-USD', timeframe='1h', years=5):
             'Volume': 'volume'
         }, inplace=True)
         
-        # Filter timezone if present to avoid mixups
+        # Remove timezone if present
         if df.index.tz is not None:
             df.index = df.index.tz_localize(None)
         status_text.empty()
+        st.success(f"✅ Loaded {len(df)} candles from Yahoo Finance")
         return df
         
     except Exception as e:
         status_text.empty()
-        st.error(f"Error fetching data: {e}")
+        st.error(f"Error fetching data: {str(e)}")
         return pd.DataFrame()
 # -----------------------------------------------------------------------------
 # 2. Feature Engineering & Logic
