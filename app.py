@@ -218,7 +218,7 @@ def find_similar_patterns(df, current_window_size=50, top_k=5):
 window_size = st.sidebar.slider("Pattern Window Size", 20, 100, 50)
 st.sidebar.markdown("---")
 st.sidebar.text("Settings:")
-st.sidebar.text(f"Symbol: BTC/USDT")
+st.sidebar.text(f"Symbol: BTC-USD")
 st.sidebar.text(f"Timeframe: 1h")
 # Main execution
 with st.spinner("Loading Market Data..."):
