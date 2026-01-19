@@ -145,13 +145,13 @@ def find_similar_patterns(df, current_window_size=50, top_k=5):
     # Get Current Context
     current_data = df.iloc[-current_window_size:]
     current_regime = current_data['regime'].iloc[-1] # Regime of the *latest* candle
-    # Note: We could use majority vote for regime, but using latest is stricter/simpler.
+    current_vol_regime = current_data['vol_regime'].iloc[-1] # Volatility regime
     
     current_prices = current_data['close'].values
     current_vector = normalize_window(current_prices).reshape(1, -1)
     
     # Filter History: Create a candidate set
-    # We want subsequences of length 50 where the END of the subsequence matches the current regime
+    # We want subsequences where the END matches BOTH regime AND volatility context
     # We must exclude the most recent window itself from the search "history"
     
     # 1. Identify valid end indices in history
@@ -163,18 +163,22 @@ def find_similar_patterns(df, current_window_size=50, top_k=5):
     # It constructs a sliding window matrix. This can be memory intensive for huge data, 
     # but for 50k rows it's manageable (50k * 50 floats).
     
-    # Optimization: Filter indices first by regime to reduce matrix creation size
-    # Candidates are indices i where df['regime'].iloc[i] == current_regime
-    # AND i > window_size (to have enough start data) AND i < history_cutoff_idx
+    # Optimization: Filter indices first by BOTH regime AND volatility to reduce matrix creation size
+    # Candidates are indices i where:
+    # - df['regime'].iloc[i] == current_regime (BULL/BEAR match)
+    # - df['vol_regime'].iloc[i] == current_vol_regime (HIGH_VOL/LOW_VOL match)
+    # - i >= window_size (to have enough start data)
+    # - i < history_cutoff_idx
     
     valid_indices = np.where(
         (df['regime'] == current_regime) & 
+        (df['vol_regime'] == current_vol_regime) &
         (np.arange(len(df)) >= current_window_size) & 
         (np.arange(len(df)) < history_cutoff_idx)
     )[0]
     
     if len(valid_indices) < top_k:
-        return None, None, f"Not enough historical {current_regime} patterns found."
+        return None, None, f"Not enough historical {current_regime} + {current_vol_regime} patterns found."
     # Construct feature matrix X
     # Each row is a normalized window of size 50 ending at index i
     X = []
@@ -223,13 +227,23 @@ def find_similar_patterns(df, current_window_size=50, top_k=5):
         future_prices = df.iloc[end_idx + 1 : end_idx + 1 + look_ahead]['close'].values
         timestamp = df.index[original_idx]
         
+        # Calculate percentage changes at different intervals
+        start_price = future_prices[0]
+        pct_changes = {}
+        for hours in [1, 2, 3, 6, 12, 24]:
+            if hours < len(future_prices):
+                pct_changes[f'{hours}h'] = ((future_prices[hours] - start_price) / start_price) * 100
+        
         matches.append({
             'timestamp': timestamp,
             'distance': distance,
             'window_prices': history_window_prices,
             'future_prices': future_prices,
             'regime': df['regime'].iloc[original_idx],
-            'return': (future_prices[-1] - future_prices[0]) / future_prices[0]
+            'return': (future_prices[-1] - future_prices[0]) / future_prices[0],
+            'pct_changes': pct_changes,
+            'start_price': start_price,
+            'end_price': future_prices[-1]
         })
         
     return current_prices, matches, None
@@ -238,6 +252,7 @@ def find_similar_patterns(df, current_window_size=50, top_k=5):
 # -----------------------------------------------------------------------------
 # Sidebar Controls
 window_size = st.sidebar.slider("Pattern Window Size", 20, 100, 50)
+enable_glow = st.sidebar.checkbox("✨ Enable Ghost Line Glow", value=True)
 st.sidebar.markdown("---")
 st.sidebar.text("Settings:")
 st.sidebar.text(f"Symbol: BTC-USD")
@@ -255,11 +270,13 @@ else:
     last_price = df_processed['close'].iloc[-1]
     last_sma = df_processed['SMA_200'].iloc[-1]
     last_regime = df_processed['regime'].iloc[-1]
+    last_vol_regime = df_processed['vol_regime'].iloc[-1]
     
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
     col1.metric("Current Price", f"${last_price:,.2f}")
     col2.metric("Market Regime", last_regime, delta="Bullish" if last_regime=="BULL" else "-Bearish")
-    col3.metric("Available History", f"{len(df_processed)} hours")
+    col3.metric("Volatility", last_vol_regime, delta="High" if last_vol_regime=="HIGH_VOL" else "Low")
+    col4.metric("Available History", f"{len(df_processed)} hours")
     
     # Run Search
     st.subheader(f"Current Pattern Search (Last {window_size} Candles)")
@@ -340,14 +357,31 @@ else:
             
             date_str = m['timestamp'].strftime('%Y-%m-%d')
             
+            # Apply glow effect if enabled
+            line_config = {'color': color, 'width': 2 if enable_glow else 1}
+            
             fig.add_trace(go.Scatter(
                 x=full_x,
                 y=full_y,
                 mode='lines',
                 name=f'Match: {date_str}',
-                line=dict(color=color, width=1),
+                line=line_config,
                 hoverinfo='name'
             ))
+            
+            # Add glow effect (shadow lines)
+            if enable_glow:
+                for glow_width in [4, 6, 8]:
+                    glow_opacity = 0.1 if outcome_return > 0 else 0.08
+                    glow_color = f'rgba(0, 255, 0, {glow_opacity})' if outcome_return > 0 else f'rgba(255, 0, 0, {glow_opacity})'
+                    fig.add_trace(go.Scatter(
+                        x=full_x,
+                        y=full_y,
+                        mode='lines',
+                        line=dict(color=glow_color, width=glow_width),
+                        showlegend=False,
+                        hoverinfo='skip'
+                    ))
             # Mark the "Now" point on the ghost line
             fig.add_trace(go.Scatter(
                 x=[window_size-1],
@@ -371,11 +405,56 @@ else:
         
         # Explanation
         st.markdown(f"""
-        ### Analysis
+        ### 📊 Analysis Summary
         Found **{len(matches)}** historically similar patterns within the **{last_regime}** regime.
-        - **{up_matches}** scenarios went UP.
-        - **{down_matches}** scenarios went DOWN.
+        - **{up_matches}** scenarios went UP 📈
+        - **{down_matches}** scenarios went DOWN 📉
+        """)
         
+        # Detailed Match Statistics
+        st.markdown("### 🔍 Detailed Match Statistics")
+        
+        # Calculate average percentage changes across all matches
+        avg_changes = {}
+        for hours in [1, 2, 3, 6, 12, 24]:
+            hour_key = f'{hours}h'
+            changes = [m['pct_changes'].get(hour_key, 0) for m in matches if hour_key in m['pct_changes']]
+            if changes:
+                avg_changes[hour_key] = np.mean(changes)
+        
+        # Display average changes
+        if avg_changes:
+            cols = st.columns(len(avg_changes))
+            for idx, (period, avg_pct) in enumerate(avg_changes.items()):
+                with cols[idx]:
+                    delta_color = "normal" if avg_pct >= 0 else "inverse"
+                    st.metric(
+                        label=f"Avg {period}",
+                        value=f"{avg_pct:+.2f}%",
+                        delta=f"{'↑' if avg_pct > 0 else '↓'}"
+                    )
+        
+        # Individual match details
+        st.markdown("### 📋 Individual Match Details")
+        for idx, m in enumerate(matches, 1):
+            with st.expander(f"Match #{idx}: {m['timestamp'].strftime('%Y-%m-%d %H:%M')} ({'UP' if m['return'] > 0 else 'DOWN'})"):
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.markdown("**Pattern Info:**")
+                    st.write(f"- **Date:** {m['timestamp'].strftime('%Y-%m-%d %H:%M')}")
+                    st.write(f"- **Regime:** {m['regime']}")
+                    st.write(f"- **Similarity Score:** {m['distance']:.4f}")
+                    st.write(f"- **Overall Return:** {m['return']*100:+.2f}%")
+                
+                with col2:
+                    st.markdown("**Hourly Price Changes:**")
+                    for period, pct in m['pct_changes'].items():
+                        emoji = "🟢" if pct > 0 else "🔴"
+                        st.write(f"{emoji} **{period}:** {pct:+.2f}%")
+        
+        st.markdown("""
+        ---
         *Note: The colored lines are historical price actions re-scaled (normalized) to fit the current price level. 
         This shows how market participants reacted to similar structures in the past.*
         """)
