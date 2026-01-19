@@ -131,12 +131,14 @@ def normalize_window(window_prices):
     Makes the shape comparable regardless of absolute price level.
     """
     return zscore(window_prices)
-def find_similar_patterns(df, current_window_size=50, top_k=5):
+def find_similar_patterns(df, current_window_size=50, top_k=None):
     """
     The Core Engine:
-    1. Extracts the current market context (Regime).
-    2. Filters history for ONLY that regime.
+    1. Extracts the current market context (Regime + Volatility).
+    2. Filters history for ONLY that context.
     3. Uses NearestNeighbors on Z-Score normalized vectors to find matches.
+    
+    If top_k is None, returns ALL matches. Otherwise returns top K nearest.
     """
     
     # Safety check
@@ -177,8 +179,16 @@ def find_similar_patterns(df, current_window_size=50, top_k=5):
         (np.arange(len(df)) < history_cutoff_idx)
     )[0]
     
-    if len(valid_indices) < top_k:
+    if len(valid_indices) < 1:
         return None, None, f"Not enough historical {current_regime} + {current_vol_regime} patterns found."
+    
+    # Determine how many neighbors to find
+    if top_k is None:
+        # Find ALL matches
+        n_neighbors = len(valid_indices)
+    else:
+        # Find top K matches
+        n_neighbors = min(top_k, len(valid_indices))
     # Construct feature matrix X
     # Each row is a normalized window of size 50 ending at index i
     X = []
@@ -201,7 +211,7 @@ def find_similar_patterns(df, current_window_size=50, top_k=5):
     X = np.array(X)
     
     # Fit Nearest Neighbors
-    nn = NearestNeighbors(n_neighbors=top_k, metric='euclidean')
+    nn = NearestNeighbors(n_neighbors=n_neighbors, metric='euclidean')
     nn.fit(X)
     
     # Search
@@ -254,6 +264,14 @@ def find_similar_patterns(df, current_window_size=50, top_k=5):
 window_size = st.sidebar.slider("Pattern Window Size", 20, 100, 50)
 enable_glow = st.sidebar.checkbox("✨ Enable Ghost Line Glow", value=True)
 st.sidebar.markdown("---")
+st.sidebar.markdown("**Match Settings:**")
+show_all_matches = st.sidebar.checkbox("📊 Show ALL Matches", value=False, help="Find all historical matches instead of just top 5")
+if not show_all_matches:
+    num_matches = st.sidebar.slider("Number of Matches", 3, 20, 5)
+else:
+    num_matches = None
+    st.sidebar.info("Will find ALL matching patterns")
+st.sidebar.markdown("---")
 st.sidebar.text("Settings:")
 st.sidebar.text(f"Symbol: BTC-USD")
 st.sidebar.text(f"Timeframe: 1h")
@@ -281,7 +299,7 @@ else:
     # Run Search
     st.subheader(f"Current Pattern Search (Last {window_size} Candles)")
     
-    current_prices, matches, error_msg = find_similar_patterns(df_processed, current_window_size=window_size)
+    current_prices, matches, error_msg = find_similar_patterns(df_processed, current_window_size=window_size, top_k=num_matches)
     
     if error_msg:
         st.warning(error_msg)
@@ -404,12 +422,25 @@ else:
         st.plotly_chart(fig, use_container_width=True)
         
         # Explanation
+        total_matches = len(matches)
+        win_rate = (up_matches / total_matches * 100) if total_matches > 0 else 0
+        
         st.markdown(f"""
         ### 📊 Analysis Summary
-        Found **{len(matches)}** historically similar patterns within the **{last_regime}** regime.
-        - **{up_matches}** scenarios went UP 📈
-        - **{down_matches}** scenarios went DOWN 📉
+        Found **{total_matches}** historically similar patterns within **{last_regime} + {last_vol_regime}** context.
         """)
+        
+        # Display comprehensive statistics
+        stat_col1, stat_col2, stat_col3, stat_col4 = st.columns(4)
+        with stat_col1:
+            st.metric("Total Matches", total_matches)
+        with stat_col2:
+            st.metric("UP Scenarios 📈", up_matches, delta=f"{up_matches/total_matches*100:.1f}%")
+        with stat_col3:
+            st.metric("DOWN Scenarios 📉", down_matches, delta=f"-{down_matches/total_matches*100:.1f}%")
+        with stat_col4:
+            st.metric("Win Rate", f"{win_rate:.1f}%", delta="Bullish" if win_rate > 50 else "Bearish")
+        
         
         # Detailed Match Statistics
         st.markdown("### 🔍 Detailed Match Statistics")
