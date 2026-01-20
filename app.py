@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit.components.v1 as components
 
 import pandas as pd
 import numpy as np
@@ -292,6 +293,100 @@ def find_similar_patterns(df, current_window_size=50, top_k=None):
         
     return current_prices, matches, None
 
+def render_lightweight_charts(current_prices, matches_to_plot, window_size):
+    """
+    Renders Lightweight Charts with current price and ghost lines.
+    Returns HTML string for st.components.html
+    """
+    import json
+    
+    # Prepare current price data
+    current_data = [{"time": i, "value": float(price)} for i, price in enumerate(current_prices)]
+    
+    # Prepare ghost lines data
+    ghost_lines = []
+    for idx, m in enumerate(matches_to_plot):
+        # Reconstruct the ghost line (simplified - just use raw prices for now)
+        window_prices = m['window_prices']
+        future_prices = m['future_prices']
+        full_prices = np.concatenate([window_prices, future_prices])
+        
+        # Create data points
+        line_data = [{"time": i, "value": float(price)} for i, price in enumerate(full_prices)]
+        
+        # Determine color based on outcome
+        color = '#00ff00' if m['return'] > 0 else '#ff0000'
+        
+        ghost_lines.append({
+            'data': line_data,
+            'color': color,
+            'label': m['timestamp'].strftime('%Y-%m-%d')
+        })
+    
+    html_template = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
+        <style>
+            body {{ margin: 0; padding: 0; }}
+            #chart {{ width: 100%; height: 600px; }}
+        </style>
+    </head>
+    <body>
+        <div id="chart"></div>
+        <script>
+            const chart = LightweightCharts.createChart(document.getElementById('chart'), {{
+                width: window.innerWidth,
+                height: 600,
+                layout: {{
+                    background: {{ color: '#ffffff' }},
+                    textColor: '#333',
+                }},
+                grid: {{
+                    vertLines: {{ color: '#f0f0f0' }},
+                    horzLines: {{ color: '#f0f0f0' }},
+                }},
+            }});
+
+            // Add current price line (main)
+            const currentSeries = chart.addLineSeries({{
+                color: '#000000',
+                lineWidth: 3,
+                title: 'Current Price'
+            }});
+            currentSeries.setData({json.dumps(current_data)});
+
+            // Add ghost lines
+            const ghostData = {json.dumps(ghost_lines)};
+            ghostData.forEach((ghost, index) => {{
+                const series = chart.addLineSeries({{
+                    color: ghost.color,
+                    lineWidth: 1,
+                    title: ghost.label,
+                    priceLineVisible: false,
+                    lastValueVisible: false
+                }});
+                series.setData(ghost.data);
+            }});
+
+            // Add vertical line at "Now"
+            const nowMarker = {{
+                time: {window_size - 1},
+                position: 'inBar',
+                color: '#888',
+                shape: 'arrowDown',
+                text: 'Now'
+            }};
+
+            chart.timeScale().fitContent();
+        </script>
+    </body>
+    </html>
+    """
+    
+    return html_template
+
 # -----------------------------------------------------------------------------
 # 3. Streamlit UI
 # -----------------------------------------------------------------------------
@@ -309,6 +404,10 @@ if not show_all_matches:
 else:
     num_matches = None
     st.sidebar.info("Will find ALL matching patterns")
+
+st.sidebar.markdown("---")
+st.sidebar.markdown("**Chart Settings:**")
+use_lightweight_charts = st.sidebar.checkbox("📈 Use Lightweight Charts", value=False, help="Use TradingView's Lightweight Charts (shows top 20, better performance)")
 
 st.sidebar.markdown("---")
 st.sidebar.text("Settings:")
@@ -344,58 +443,77 @@ else:
     if error_msg:
         st.warning(error_msg)
     else:
-        # Performance optimization: If showing all matches, calculate stats on all but only plot top matches
-        if show_all_matches and len(matches) > 10:
-            st.info(f"📊 Found {len(matches)} total matches (after de-duplication). Displaying top 10 most similar on chart, but statistics include ALL matches.")
-            matches_to_plot = matches[:10]  # Only plot top 10
-            all_matches = matches  # Keep all for statistics
+        # Performance optimization: Adjust matches to plot based on chart type
+        if use_lightweight_charts:
+            # Lightweight Charts can handle more matches efficiently
+            if show_all_matches and len(matches) > 20:
+                st.info(f"📊 Found {len(matches)} total matches (after de-duplication). Displaying top 20 most similar on Lightweight Chart, but statistics include ALL matches.")
+                matches_to_plot = matches[:20]  # Plot top 20 with Lightweight Charts
+                all_matches = matches
+            else:
+                matches_to_plot = matches
+                all_matches = matches
         else:
-            matches_to_plot = matches
-            all_matches = matches
+            # Plotly - limit to 10 for performance
+            if show_all_matches and len(matches) > 10:
+                st.info(f"📊 Found {len(matches)} total matches (after de-duplication). Displaying top 10 most similar on chart, but statistics include ALL matches.")
+                matches_to_plot = matches[:10]  # Only plot top 10
+                all_matches = matches  # Keep all for statistics
+            else:
+                matches_to_plot = matches
+                all_matches = matches
+        
         # ---------------------------------------------------------------------
         # Visualization
         # ---------------------------------------------------------------------
-        fig = go.Figure()
-        
-        # 1. Plot Current Pattern (Black Line)
-        # We index it 0 to N
-        x_current = list(range(len(current_prices)))
-        fig.add_trace(go.Scatter(
-            x=x_current, 
-            y=current_prices, 
-            mode='lines', 
-            name='Current Price',
-            line=dict(color='black', width=3)
-        ))
-        
-        # 2. Plot Ghost Lines
-        # We need to scale the matches to overlay them visually on the current price.
-        # Since we matched on Z-scores, the absolute levels might differ.
-        # Approach: Re-scale the matched window to start at the same price as current window's start,
-        # OR just plot them on a secondary axis?
-        # Better: "Un-normalize" the ghost line to fit the current range roughly, 
-        # or more simply: Align the first point of the match to the first point of current.
-        
-        # "Shape matching" visualization implies we care about the move, not the level.
-        # We will re-base the ghost lines so they start at the same price as the current sequence[0].
-        # Even better: Use the normalization parameters (mean/std) of the CURRENT window to 
-        # project the z-scores of the match back to current price levels. -> This is the most mathematically correct "Ghost Projection"
-        
-        current_mean = np.mean(current_prices)
-        current_std = np.std(current_prices)
-        
-        up_matches = 0
-        down_matches = 0
-        
-        # Calculate statistics on ALL matches
-        for m in all_matches:
-            if m['return'] > 0:
-                up_matches += 1
-            else:
-                down_matches += 1
-        
-        # But only plot the subset
-        for i, m in enumerate(matches_to_plot):
+        if use_lightweight_charts:
+            # Use Lightweight Charts
+            st.subheader("📈 Lightweight Charts View")
+            html_content = render_lightweight_charts(current_prices, matches_to_plot, window_size)
+            components.html(html_content, height=650)
+        else:
+            # Use Plotly (existing code)
+            fig = go.Figure()
+            
+            # 1. Plot Current Pattern (Black Line)
+            # We index it 0 to N
+            x_current = list(range(len(current_prices)))
+            fig.add_trace(go.Scatter(
+                x=x_current, 
+                y=current_prices, 
+                mode='lines', 
+                name='Current Price',
+                line=dict(color='black', width=3)
+            ))
+            
+            # 2. Plot Ghost Lines
+            # We need to scale the matches to overlay them visually on the current price.
+            # Since we matched on Z-scores, the absolute levels might differ.
+            # Approach: Re-scale the matched window to start at the same price as current window's start,
+            # OR just plot them on a secondary axis?
+            # Better: "Un-normalize" the ghost line to fit the current range roughly, 
+            # or more simply: Align the first point of the match to the first point of current.
+            
+            # "Shape matching" visualization implies we care about the move, not the level.
+            # We will re-base the ghost lines so they start at the same price as the current sequence[0].
+            # Even better: Use the normalization parameters (mean/std) of the CURRENT window to 
+            # project the z-scores of the match back to current price levels. -> This is the most mathematically correct "Ghost Projection"
+            
+            current_mean = np.mean(current_prices)
+            current_std = np.std(current_prices)
+            
+            up_matches = 0
+            down_matches = 0
+            
+            # Calculate statistics on ALL matches
+            for m in all_matches:
+                if m['return'] > 0:
+                    up_matches += 1
+                else:
+                    down_matches += 1
+            
+            # But only plot the subset
+            for i, m in enumerate(matches_to_plot):
             # Reconstruct price series from the match's Z-scores (implicitly)
             # Actually we have the raw prices. Let's calculate its Z-score and project to current.
             gw_prices = m['window_prices']
