@@ -516,78 +516,78 @@ else:
             for i, m in enumerate(matches_to_plot):
             # Reconstruct price series from the match's Z-scores (implicitly)
             # Actually we have the raw prices. Let's calculate its Z-score and project to current.
-            gw_prices = m['window_prices']
-            gw_mean = np.mean(gw_prices)
-            gw_std = np.std(gw_prices)
+                            gw_prices = m['window_prices']
+                            gw_mean = np.mean(gw_prices)
+                            gw_std = np.std(gw_prices)
             
             # Z = (P - mu) / sigma  =>  P_projected = Z * current_sigma + current_mu
-            gw_z = (gw_prices - gw_mean) / gw_std
+                            gw_z = (gw_prices - gw_mean) / gw_std
             
             # Project History Window
-            projected_window = gw_z * current_std + current_mean
+                            projected_window = gw_z * current_std + current_mean
             
             # Project Future (Forecast)
-            future_prices = m['future_prices']
+                            future_prices = m['future_prices']
             # We treat the future as a continuation of the Z-score path
             # But we must use the SAME match stats (gw_mean, gw_std) to convert future prices to Z
-            future_z = (future_prices - gw_mean) / gw_std
-            projected_future = future_z * current_std + current_mean
+                            future_z = (future_prices - gw_mean) / gw_std
+                            projected_future = future_z * current_std + current_mean
             
             # Determine color based on outcome
-            outcome_return = m['return']
-            if outcome_return > 0:
-                color = 'rgba(0, 255, 0, 0.3)' # Greenish transparent
-                up_matches += 1
-            else:
-                color = 'rgba(255, 0, 0, 0.3)' # Reddish transparent
-                down_matches += 1
+                            outcome_return = m['return']
+                            if outcome_return > 0:
+                                color = 'rgba(0, 255, 0, 0.3)' # Greenish transparent
+                                up_matches += 1
+                            else:
+                                color = 'rgba(255, 0, 0, 0.3)' # Reddish transparent
+                                down_matches += 1
                 
             # Plot the combined path (History + Future) as one ghost line
             # x-coordinates: 0 to 50 for window, 50 to 70 for future
-            full_y = np.concatenate([projected_window, projected_future])
-            full_x = list(range(len(full_y)))
+                            full_y = np.concatenate([projected_window, projected_future])
+                            full_x = list(range(len(full_y)))
             
-            date_str = m['timestamp'].strftime('%Y-%m-%d')
+                            date_str = m['timestamp'].strftime('%Y-%m-%d')
             
             # Apply glow effect if enabled
-            line_config = {'color': color, 'width': 2 if enable_glow else 1}
+                            line_config = {'color': color, 'width': 2 if enable_glow else 1}
             
-            fig.add_trace(go.Scatter(
-                x=full_x,
-                y=full_y,
-                mode='lines',
-                name=f'Match: {date_str}',
-                line=line_config,
-                hoverinfo='name'
-            ))
+                            fig.add_trace(go.Scatter(
+                                x=full_x,
+                                y=full_y,
+                                mode='lines',
+                                name=f'Match: {date_str}',
+                                line=line_config,
+                                hoverinfo='name'
+                            ))
             
             # Add glow effect (shadow lines)
-            if enable_glow:
-                # Reduce glow layers when plotting many matches
-                glow_layers = [4, 6] if len(matches_to_plot) > 5 else [4, 6, 8]
+                            if enable_glow:
+            # Reduce glow layers when plotting many matches
+                                glow_layers = [4, 6] if len(matches_to_plot) > 5 else [4, 6, 8]
                 for glow_width in glow_layers:
-                    glow_opacity = 0.1 if outcome_return > 0 else 0.08
-                    glow_color = f'rgba(0, 255, 0, {glow_opacity})' if outcome_return > 0 else f'rgba(255, 0, 0, {glow_opacity})'
-                    fig.add_trace(go.Scatter(
-                        x=full_x,
-                        y=full_y,
-                        mode='lines',
-                        line=dict(color=glow_color, width=glow_width),
-                        showlegend=False,
-                        hoverinfo='skip'
-                    ))
+                                    glow_opacity = 0.1 if outcome_return > 0 else 0.08
+                                    glow_color = f'rgba(0, 255, 0, {glow_opacity})' if outcome_return > 0 else f'rgba(255, 0, 0, {glow_opacity})'
+                                    fig.add_trace(go.Scatter(
+                                        x=full_x,
+                                        y=full_y,
+                                        mode='lines',
+                                        line=dict(color=glow_color, width=glow_width),
+                                        showlegend=False,
+                                        hoverinfo='skip'
+                                    ))
 
             # Mark the "Now" point on the ghost line
-            fig.add_trace(go.Scatter(
-                x=[window_size-1],
-                y=[projected_window[-1]],
-                mode='markers',
-                marker=dict(color=color, size=5),
-                showlegend=False
-            ))
+                            fig.add_trace(go.Scatter(
+                                x=[window_size-1],
+                                y=[projected_window[-1]],
+                                mode='markers',
+                                marker=dict(color=color, size=5),
+                                showlegend=False
+                            ))
 
-        # Divider line for "Now"
-        fig.add_vline(x=window_size-1, line_width=1, line_dash="dash", line_color="gray", annotation_text="Now")
+            # Divider line for "Now"
+                        fig.add_vline(x=window_size-1, line_width=1, line_dash="dash", line_color="gray", annotation_text="Now")
         
         fig.update_layout(
             title="Ghost Lines: Historical Context Matches",
