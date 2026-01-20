@@ -255,6 +255,29 @@ def find_similar_patterns(df, current_window_size=50, top_k=None):
             'start_price': start_price,
             'end_price': future_prices[-1]
         })
+    
+    # De-duplicate overlapping matches
+    # Filter out matches that are within 24 hours of each other (keep the most similar one)
+    if len(matches) > 1:
+        deduplicated_matches = []
+        used_timestamps = set()
+        
+        for match in matches:
+            timestamp = match['timestamp']
+            
+            # Check if this timestamp is too close to any already selected match
+            is_duplicate = False
+            for used_ts in used_timestamps:
+                time_diff = abs((timestamp - used_ts).total_seconds() / 3600)  # Hours
+                if time_diff < 24:  # Within 24 hours
+                    is_duplicate = True
+                    break
+            
+            if not is_duplicate:
+                deduplicated_matches.append(match)
+                used_timestamps.add(timestamp)
+        
+        matches = deduplicated_matches
         
     return current_prices, matches, None
 # -----------------------------------------------------------------------------
