@@ -1,4 +1,5 @@
 import streamlit as st
+
 import pandas as pd
 import numpy as np
 from scipy.stats import zscore
@@ -6,15 +7,18 @@ from sklearn.neighbors import NearestNeighbors
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
 import os
+
 # -----------------------------------------------------------------------------
 # Configuration & Setup
 # -----------------------------------------------------------------------------
 st.set_page_config(page_title="Bitcoin Market Memory", layout="wide")
+
 st.title("🧠 Context-Aware Market Memory: BTC/USDT")
 st.markdown("""
 **Concept:** This tool finds "Ghost Lines" — historical price patterns that match the *current* market structure.
 It uses Z-score normalization to match shapes rather than absolute prices and filters by market regime (Bull/Bear).
 """)
+
 # -----------------------------------------------------------------------------
 # 1. Data Ingestion (with Caching)
 # -----------------------------------------------------------------------------
@@ -72,6 +76,7 @@ def fetch_binance_data(symbol='BTC-USD', timeframe='1h', years=2):
             # Remove timezone if present
             if df.index.tz is not None:
                 df.index = df.index.tz_localize(None)
+
             status_text.empty()
             st.success(f"✅ Loaded {len(df):,} candles from Yahoo Finance")
             return df
@@ -95,6 +100,7 @@ def fetch_binance_data(symbol='BTC-USD', timeframe='1h', years=2):
     
     status_text.empty()
     return pd.DataFrame()
+
 # -----------------------------------------------------------------------------
 # 2. Feature Engineering & Logic
 # -----------------------------------------------------------------------------
@@ -115,6 +121,7 @@ def process_data(df):
     df['TR'] = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
     df['ATR'] = df['TR'].rolling(window=14).mean()
     df['ATR_MA'] = df['ATR'].rolling(window=200).mean() # Smoothed avg of volatility for regime check
+
     # 2.2 Regime Labeling
     # BULL: Price > SMA_200, BEAR: Price < SMA_200
     df['regime'] = np.where(df['close'] > df['SMA_200'], 'BULL', 'BEAR')
@@ -125,12 +132,14 @@ def process_data(df):
     # Clean NaN values created by rolling windows
     df.dropna(inplace=True)
     return df
+
 def normalize_window(window_prices):
     """
     Z-Score Normalization: (Price - Mean) / StdDev
     Makes the shape comparable regardless of absolute price level.
     """
     return zscore(window_prices)
+
 def find_similar_patterns(df, current_window_size=50, top_k=None):
     """
     The Core Engine:
@@ -144,6 +153,7 @@ def find_similar_patterns(df, current_window_size=50, top_k=None):
     # Safety check
     if len(df) < current_window_size + 200:
         return None, None, "Not enough data."
+
     # Get Current Context
     current_data = df.iloc[-current_window_size:]
     current_regime = current_data['regime'].iloc[-1] # Regime of the *latest* candle
@@ -189,6 +199,7 @@ def find_similar_patterns(df, current_window_size=50, top_k=None):
     else:
         # Find top K matches
         n_neighbors = min(top_k, len(valid_indices))
+
     # Construct feature matrix X
     # Each row is a normalized window of size 50 ending at index i
     X = []
@@ -269,7 +280,7 @@ def find_similar_patterns(df, current_window_size=50, top_k=None):
             is_duplicate = False
             for used_ts in used_timestamps:
                 time_diff = abs((timestamp - used_ts).total_seconds() / 3600)  # Hours
-                if time_diff < 24:  # Within 24 hours
+                if time_diff < 100:  # Within 100 hours
                     is_duplicate = True
                     break
             
@@ -280,24 +291,30 @@ def find_similar_patterns(df, current_window_size=50, top_k=None):
         matches = deduplicated_matches
         
     return current_prices, matches, None
+
 # -----------------------------------------------------------------------------
 # 3. Streamlit UI
 # -----------------------------------------------------------------------------
+
 # Sidebar Controls
 window_size = st.sidebar.slider("Pattern Window Size", 20, 100, 50)
 enable_glow = st.sidebar.checkbox("✨ Enable Ghost Line Glow", value=True)
+
 st.sidebar.markdown("---")
 st.sidebar.markdown("**Match Settings:**")
 show_all_matches = st.sidebar.checkbox("📊 Show ALL Matches", value=False, help="Find all historical matches instead of just top 5")
+
 if not show_all_matches:
     num_matches = st.sidebar.slider("Number of Matches", 3, 20, 5)
 else:
     num_matches = None
     st.sidebar.info("Will find ALL matching patterns")
+
 st.sidebar.markdown("---")
 st.sidebar.text("Settings:")
 st.sidebar.text(f"Symbol: BTC-USD")
 st.sidebar.text(f"Timeframe: 1h")
+
 # Main execution
 with st.spinner("Loading Market Data..."):
     df = fetch_binance_data()
@@ -329,7 +346,7 @@ else:
     else:
         # Performance optimization: If showing all matches, calculate stats on all but only plot top matches
         if show_all_matches and len(matches) > 10:
-            st.info(f"📊 Found {len(matches)} total matches. Displaying top 10 most similar on chart, but statistics include ALL matches.")
+            st.info(f"📊 Found {len(matches)} total matches (after de-duplication). Displaying top 10 most similar on chart, but statistics include ALL matches.")
             matches_to_plot = matches[:10]  # Only plot top 10
             all_matches = matches  # Keep all for statistics
         else:
@@ -441,6 +458,7 @@ else:
                         showlegend=False,
                         hoverinfo='skip'
                     ))
+
             # Mark the "Now" point on the ghost line
             fig.add_trace(go.Scatter(
                 x=[window_size-1],
@@ -449,6 +467,7 @@ else:
                 marker=dict(color=color, size=5),
                 showlegend=False
             ))
+
         # Divider line for "Now"
         fig.add_vline(x=window_size-1, line_width=1, line_dash="dash", line_color="gray", annotation_text="Now")
         
